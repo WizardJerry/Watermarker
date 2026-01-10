@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+/* 这里可以放一些全局的重置样式，特别是针对 Tauri 桌面应用的体验优化 */
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  /* 禁用默认的右键菜单（可选，Tauri应用常用） */
+  /* user-select: none; */
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
