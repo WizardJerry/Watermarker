@@ -62,10 +62,10 @@ const WatermarkPage: React.FC = () => {
     const [files, setFiles] = useState<UploadedFile[]>([]);
     const [watermarkText, setWatermarkText] = useState<string>("");
     const [isDragging, setIsDragging] = useState<boolean>(false);
-    
+
     // Config State
     const [configs, setConfigs] = useState<WatermarkConfig[]>([]);
-    const [selectedConfigId, setSelectedConfigId] = useState<string>(""); 
+    const [selectedConfigId, setSelectedConfigId] = useState<string>("");
     const [isConfigPanelOpen, setIsConfigPanelOpen] = useState<boolean>(false);
     const [editingConfig, setEditingConfig] = useState<WatermarkConfig | null>(null);
 
@@ -80,7 +80,12 @@ const WatermarkPage: React.FC = () => {
         try {
             const loaded = await invoke<WatermarkConfig[]>('get_all_configs');
             setConfigs(loaded);
-            if (loaded.length > 0 && !selectedConfigId) {
+
+            // Try to load default from localStorage, fallback to first
+            const savedDefault = localStorage.getItem("defaultConfig");
+            if (savedDefault && loaded.some(c => c.name === savedDefault)) {
+                setSelectedConfigId(savedDefault);
+            } else if (loaded.length > 0 && !selectedConfigId) {
                 setSelectedConfigId(loaded[0].name);
             }
         } catch (err) {
@@ -122,7 +127,7 @@ const WatermarkPage: React.FC = () => {
                 if (configs.some(c => c.name === config.name)) {
                     config.name = `${config.name} (Imported)`;
                 }
-                
+
                 // Save it immediately so it persists? Or just add to state? 
                 // Requirement said "load config", usually implies adding to the list.
                 // Let's save it to our local storage.
@@ -135,15 +140,21 @@ const WatermarkPage: React.FC = () => {
         }
     };
 
+    const handleSetDefault = () => {
+        if (!editingConfig) return;
+        localStorage.setItem("defaultConfig", editingConfig.name);
+        // alert(`Configuration "${editingConfig.name}" set as default.`);
+    };
+
     const handleSaveConfig = async (asNew: boolean = false) => {
         if (!editingConfig) return;
-        
+
         try {
             const configToSave = { ...editingConfig };
             if (asNew) {
                 configToSave.name = `${configToSave.name}_Copy`;
             }
-            
+
             await invoke('save_config', { config: configToSave });
             await loadConfigs();
             setSelectedConfigId(configToSave.name);
@@ -163,7 +174,7 @@ const WatermarkPage: React.FC = () => {
             const remaining = configs.filter(c => c.name !== editingConfig.name);
             if (remaining.length > 0) setSelectedConfigId(remaining[0].name);
             else setSelectedConfigId("");
-            
+
             setIsConfigPanelOpen(false);
             setEditingConfig(null);
         } catch (err) {
@@ -196,7 +207,7 @@ const WatermarkPage: React.FC = () => {
             setFiles(prev => [...prev, ...droppedFiles]);
         }
     };
-    
+
     // Tauri Listeners (Existing)
     useEffect(() => {
         const unlistenDrop = listen<{ paths: string[], position: { x: number, y: number } }>('tauri://drag-drop', (event) => {
@@ -351,20 +362,20 @@ const WatermarkPage: React.FC = () => {
 
                             {/* Action Toolbar: Modify | Add | Import */}
                             <div className="flex items-center gap-2">
-                                <ToolbarBtn 
-                                    icon={<Edit3 size={16} />} 
+                                <ToolbarBtn
+                                    icon={<Edit3 size={16} />}
                                     text="Modify"
-                                    onClick={handleModifyConfig} 
+                                    onClick={handleModifyConfig}
                                 />
-                                <ToolbarBtn 
-                                    icon={<Plus size={16} />} 
+                                <ToolbarBtn
+                                    icon={<Plus size={16} />}
                                     text="Add"
-                                    onClick={handleAddConfig} 
+                                    onClick={handleAddConfig}
                                 />
-                                <ToolbarBtn 
-                                    icon={<FolderOpen size={16} />} 
+                                <ToolbarBtn
+                                    icon={<FolderOpen size={16} />}
                                     text="Import"
-                                    onClick={handleImportConfig} 
+                                    onClick={handleImportConfig}
                                 />
                             </div>
                         </div>
@@ -438,7 +449,7 @@ const WatermarkPage: React.FC = () => {
                 {isConfigPanelOpen && editingConfig && (
                     <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
                         <div className="w-full max-w-2xl bg-[#131316] border border-white/10 rounded-3xl shadow-2xl flex flex-col max-h-full overflow-hidden">
-                            
+
                             {/* Header */}
                             <div className="flex items-center justify-between p-6 border-b border-white/5">
                                 <div className="flex items-center gap-3">
@@ -447,7 +458,7 @@ const WatermarkPage: React.FC = () => {
                                     </div>
                                     <h2 className="text-lg font-medium text-white">Configuration Editor</h2>
                                 </div>
-                                <button 
+                                <button
                                     onClick={() => setIsConfigPanelOpen(false)}
                                     className="p-2 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors"
                                 >
@@ -457,13 +468,13 @@ const WatermarkPage: React.FC = () => {
 
                             {/* Body (Scrollable) */}
                             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                                
+
                                 {/* Name & Template */}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-1.5">
                                         <label className="text-xs text-slate-500 font-medium ml-1">CONFIG NAME</label>
-                                        <input 
-                                            type="text" 
+                                        <input
+                                            type="text"
                                             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:ring-1 focus:ring-indigo-500/50 focus:outline-none"
                                             value={editingConfig.name}
                                             onChange={(e) => setEditingConfig({ ...editingConfig, name: e.target.value })}
@@ -471,8 +482,8 @@ const WatermarkPage: React.FC = () => {
                                     </div>
                                     <div className="space-y-1.5">
                                         <label className="text-xs text-slate-500 font-medium ml-1">TEXT TEMPLATE (Use {'{}'} for input)</label>
-                                        <input 
-                                            type="text" 
+                                        <input
+                                            type="text"
                                             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:ring-1 focus:ring-indigo-500/50 focus:outline-none"
                                             value={editingConfig.text}
                                             onChange={(e) => setEditingConfig({ ...editingConfig, text: e.target.value })}
@@ -484,7 +495,7 @@ const WatermarkPage: React.FC = () => {
                                 <div className="grid grid-cols-4 gap-4">
                                     <div className="col-span-2 space-y-1.5">
                                         <label className="text-xs text-slate-500 font-medium ml-1">FONT FAMILY</label>
-                                        <select 
+                                        <select
                                             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:ring-1 focus:ring-indigo-500/50 focus:outline-none appearance-none"
                                             value={editingConfig.font_family}
                                             onChange={(e) => setEditingConfig({ ...editingConfig, font_family: e.target.value })}
@@ -496,8 +507,8 @@ const WatermarkPage: React.FC = () => {
                                     </div>
                                     <div className="space-y-1.5">
                                         <label className="text-xs text-slate-500 font-medium ml-1">SIZE</label>
-                                        <input 
-                                            type="number" 
+                                        <input
+                                            type="number"
                                             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:ring-1 focus:ring-indigo-500/50 focus:outline-none"
                                             value={editingConfig.font_size}
                                             onChange={(e) => setEditingConfig({ ...editingConfig, font_size: parseFloat(e.target.value) })}
@@ -506,8 +517,8 @@ const WatermarkPage: React.FC = () => {
                                     <div className="space-y-1.5">
                                         <label className="text-xs text-slate-500 font-medium ml-1">COLOR</label>
                                         <div className="flex gap-2">
-                                            <input 
-                                                type="color" 
+                                            <input
+                                                type="color"
                                                 className="h-10 w-full bg-transparent border-none cursor-pointer"
                                                 value={editingConfig.color}
                                                 onChange={(e) => setEditingConfig({ ...editingConfig, color: e.target.value })}
@@ -520,7 +531,7 @@ const WatermarkPage: React.FC = () => {
 
                                 {/* Layout & Position Grid */}
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                    
+
                                     {/* Left: Position Matrix */}
                                     <div className="space-y-3">
                                         <label className="text-xs text-slate-500 font-medium ml-1">POSITION (ANCHOR)</label>
@@ -529,11 +540,10 @@ const WatermarkPage: React.FC = () => {
                                                 <button
                                                     key={pos}
                                                     onClick={() => setEditingConfig({ ...editingConfig, position: pos })}
-                                                    className={`rounded-lg transition-all border ${
-                                                        editingConfig.position === pos 
-                                                        ? 'bg-indigo-500 border-indigo-400 text-white' 
-                                                        : 'bg-white/5 border-transparent hover:bg-white/10 text-slate-500'
-                                                    }`}
+                                                    className={`rounded-lg transition-all border ${editingConfig.position === pos
+                                                            ? 'bg-indigo-500 border-indigo-400 text-white'
+                                                            : 'bg-white/5 border-transparent hover:bg-white/10 text-slate-500'
+                                                        }`}
                                                 >
                                                     <div className="w-full h-full flex items-center justify-center">
                                                         <div className={`w-2 h-2 rounded-full ${editingConfig.position === pos ? 'bg-white' : 'bg-slate-600'}`} />
@@ -545,13 +555,13 @@ const WatermarkPage: React.FC = () => {
 
                                     {/* Right: Tiling & Rotation */}
                                     <div className="space-y-6">
-                                        
+
                                         {/* Rotation */}
                                         <div className="space-y-2">
                                             <div className="flex justify-between">
                                                 <label className="text-xs text-slate-500 font-medium">ROTATION ({editingConfig.rotation}°)</label>
                                             </div>
-                                            <input 
+                                            <input
                                                 type="range" min="0" max="360" step="15"
                                                 className="w-full accent-indigo-500 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
                                                 value={editingConfig.rotation}
@@ -564,7 +574,7 @@ const WatermarkPage: React.FC = () => {
                                             <div className="flex justify-between">
                                                 <label className="text-xs text-slate-500 font-medium">OPACITY ({Math.round(editingConfig.opacity * 100)}%)</label>
                                             </div>
-                                            <input 
+                                            <input
                                                 type="range" min="0.1" max="1" step="0.1"
                                                 className="w-full accent-indigo-500 h-2 bg-white/10 rounded-lg appearance-none cursor-pointer"
                                                 value={editingConfig.opacity}
@@ -576,8 +586,8 @@ const WatermarkPage: React.FC = () => {
                                         <div className="p-4 rounded-xl bg-white/5 border border-white/10 space-y-4">
                                             <div className="flex items-center justify-between">
                                                 <span className="text-sm text-slate-300">Repeat Watermark</span>
-                                                <input 
-                                                    type="checkbox" 
+                                                <input
+                                                    type="checkbox"
                                                     className="w-5 h-5 accent-indigo-500 rounded cursor-pointer"
                                                     checked={editingConfig.is_repeated}
                                                     onChange={(e) => setEditingConfig({ ...editingConfig, is_repeated: e.target.checked })}
@@ -589,14 +599,13 @@ const WatermarkPage: React.FC = () => {
                                                     <label className="text-xs text-slate-500 font-medium">SPACING DENSITY</label>
                                                     <div className="grid grid-cols-3 gap-2">
                                                         {['Loose', 'Normal', 'Tight'].map(s => (
-                                                            <button 
+                                                            <button
                                                                 key={s}
                                                                 onClick={() => setEditingConfig({ ...editingConfig, spacing: s })}
-                                                                className={`px-3 py-1.5 text-xs rounded-lg border ${
-                                                                    editingConfig.spacing === s 
-                                                                    ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' 
-                                                                    : 'bg-black/20 border-white/10 text-slate-400 hover:bg-white/5'
-                                                                }`}
+                                                                className={`px-3 py-1.5 text-xs rounded-lg border ${editingConfig.spacing === s
+                                                                        ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                                                                        : 'bg-black/20 border-white/10 text-slate-400 hover:bg-white/5'
+                                                                    }`}
                                                             >
                                                                 {s}
                                                             </button>
@@ -612,7 +621,7 @@ const WatermarkPage: React.FC = () => {
 
                             {/* Footer / Actions */}
                             <div className="p-6 border-t border-white/5 flex items-center justify-between bg-[#0f0f11]/50">
-                                <button 
+                                <button
                                     onClick={handleDeleteConfig}
                                     className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors text-sm font-medium"
                                 >
@@ -620,13 +629,20 @@ const WatermarkPage: React.FC = () => {
                                 </button>
 
                                 <div className="flex items-center gap-3">
-                                    <button 
+                                    <button
+                                        onClick={handleSetDefault}
+                                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 transition-colors text-sm font-medium border border-transparent hover:border-indigo-500/30"
+                                        title="Set as default on startup"
+                                    >
+                                        <CheckCircle2 size={16} className="text-indigo-400" /> Set Default
+                                    </button>
+                                    <button
                                         onClick={() => handleSaveConfig(true)}
                                         className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 transition-colors text-sm font-medium"
                                     >
                                         <Copy size={16} /> Save As New
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={() => handleSaveConfig(false)}
                                         className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 transition-all text-sm font-semibold"
                                     >

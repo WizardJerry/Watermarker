@@ -168,6 +168,21 @@ fn parse_color(hex: &str) -> (f32, f32, f32) {
     (r, g, b)
 }
 
+// Estimate text width (heuristic)
+fn estimate_text_width(text: &str, font: &str, size: f32) -> f32 {
+    // Basic heuristics for Standard14 fonts
+    let avg_width_ratio = match font {
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => 0.60, // Monospace
+        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" => 0.45,
+        _ => 0.50, // Helvetica/Arial approx
+    };
+
+    // A bit more refinement: counting uppercase vs lowercase could improve this,
+    // but for now, simple length * ratio * size is "good enough" for visual centering.
+    let len = text.chars().count() as f32;
+    len * size * avg_width_ratio
+}
+
 #[tauri::command]
 fn add_watermark(
     input_path: String,
@@ -200,9 +215,18 @@ fn add_watermark(
     let cos_theta = rad.cos();
     let sin_theta = rad.sin();
 
-    println!("Color: ({}, {}, {})", r, g, b);
-    println!("Rotation: {}", config.rotation);
-    println!("Cosine: {}, Sine: {}", cos_theta, sin_theta);
+    // Calculate offsets based on alignment strategy
+    let text_width = estimate_text_width(&final_text, &config.font_family, config.font_size);
+    
+    // Determine alignment ratio (0.0 = Left/Start, 0.5 = Center, 1.0 = Right/End)
+    let x_align_ratio = match config.position.as_str() {
+        "TopLeft" | "BottomLeft" => 0.0,
+        "TopRight" | "BottomRight" => 1.0,
+        _ => 0.5, // Center, TopCenter, BottomCenter, CenterLeft, CenterRight
+    };
+
+    let offset_x = -text_width * x_align_ratio;
+    let offset_y = -config.font_size / 3.0; // Shift down slightly to center vertically on baseline (approx 1/3 em)
 
     for (page_id, object_id) in doc.get_pages() {
         // 1. Get MediaBox to calculate position
@@ -233,7 +257,7 @@ fn add_watermark(
         // Calculate Position
         // Simplistic anchor points
         let (cx, cy) = (width / 2.0, height / 2.0);
-        let margin = 50.0;
+        let margin = 20.0;
 
         // We need coordinates for the TEXT origin.
         // Rotation happens around the text origin if we translate first.
@@ -367,6 +391,9 @@ fn add_watermark(
                     py.into(),
                 ],
             ));
+
+            // Shift origin relative to rotation to center the text
+            ops.push(Operation::new("Td", vec![offset_x.into(), offset_y.into()]));
 
             ops.push(Operation::new(
                 "Tj",
