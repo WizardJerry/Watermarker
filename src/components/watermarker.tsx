@@ -16,8 +16,8 @@ import {
     Trash2,
     Copy,
     FolderOpen,
-    AlignLeft, AlignCenter, AlignRight,
-    AlignJustify, ArrowUp, ArrowDown
+    // AlignLeft, AlignCenter, AlignRight,
+    // AlignJustify, ArrowUp, ArrowDown
 } from 'lucide-react';
 
 // -----------------------

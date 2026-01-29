@@ -241,11 +241,22 @@ fn add_watermark(
             if let Ok(media_box) = page_dict.get(b"MediaBox").and_then(|o| o.as_array()) {
                 if media_box.len() >= 4 {
                     // [x1, y1, x2, y2]
-                    // simplistic assumption: x1=0, y1=0 usually. width = x2-x1, height = y2-y1
-                    let x1 = media_box[0].as_f32().unwrap_or(0.0);
-                    let y1 = media_box[1].as_f32().unwrap_or(0.0);
-                    let x2 = media_box[2].as_f32().unwrap_or(0.0);
-                    let y2 = media_box[3].as_f32().unwrap_or(0.0);
+                    // 考虑继承属性的 Meida box：doc.get_page_resources(object_id)
+                    // 考虑间接对象引用的 Media box: let media_box = page_dict.get(b"MediaBox")
+                    //.and_then(|obj| doc.get_object(obj.as_reference().unwrap_or(object_id)).ok()) // 如果是引用则获取引用对象
+                    //.and_then(|obj| obj.as_array().ok());
+                    let get_f32 = |obj: &lopdf::Object| -> f32 {
+                        match obj {
+                            lopdf::Object::Real(f) => *f,
+                            lopdf::Object::Integer(i) => *i as f32,
+                            _ => 0.0,
+                        }
+                    };
+                    let x1 = get_f32(&media_box[0]);
+                    let y1 = get_f32(&media_box[1]);
+                    let x2 = get_f32(&media_box[2]);
+                    let y2 = get_f32(&media_box[3]);
+                    println!("MediaBox: [{}, {}, {}, {}]", x1, y1, x2, y2);
                     width = (x2 - x1).abs();
                     height = (y2 - y1).abs();
                 }
