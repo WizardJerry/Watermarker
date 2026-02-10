@@ -17,6 +17,10 @@ pub struct WatermarkConfig {
     pub rotation: f32,
     pub is_repeated: bool,
     pub spacing: String, // "Loose", "Normal", "Tight"
+    #[serde(default)]
+    pub export_path: String, // "" = Same as source, or absolute path
+    #[serde(default)]
+    pub export_suffix: String, // e.g. "_marked_{}"
 }
 
 impl Default for WatermarkConfig {
@@ -32,6 +36,8 @@ impl Default for WatermarkConfig {
             rotation: 45.0,
             is_repeated: false,
             spacing: "Normal".to_string(),
+            export_path: "".to_string(),
+            export_suffix: "_marked".to_string(),
         }
     }
 }
@@ -81,6 +87,8 @@ fn get_all_configs() -> Result<Vec<WatermarkConfig>, String> {
             rotation: 45.0,
             is_repeated: true,
             spacing: "Normal".to_string(),
+            export_path: "".to_string(),
+            export_suffix: "_CONFIDENTIAL".to_string(),
         };
         let path2 = dir.join("Confidential.json");
         let json2 = serde_json::to_string_pretty(&confidential).map_err(|e| e.to_string())?;
@@ -168,20 +176,55 @@ fn parse_color(hex: &str) -> (f32, f32, f32) {
     (r, g, b)
 }
 
-// Estimate text width (heuristic)
+// Character widths for Helvetica Standard 14 at 1000 units
+const HELVETICA_WIDTHS: [u16; 128] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667,
+    611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+    667, 611, 278, 278, 278, 469, 556, 222, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
+    222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+    0,
+];
+
+// Character widths for Times-Roman Standard 14 at 1000 units
+const TIMES_ROMAN_WIDTHS: [u16; 128] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    250, 333, 408, 500, 500, 833, 778, 180, 333, 333, 500, 564, 250, 333, 250, 278, 500, 500, 500,
+    500, 500, 500, 500, 500, 500, 500, 278, 278, 564, 564, 564, 444, 921, 722, 667, 667, 722, 611,
+    556, 722, 722, 333, 389, 722, 611, 889, 722, 722, 556, 722, 667, 556, 611, 722, 722, 944, 722,
+    722, 611, 333, 278, 333, 469, 500, 250, 444, 500, 444, 500, 444, 333, 500, 500, 278, 278, 500,
+    278, 778, 500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444, 480, 200, 480, 541,
+    0,
+];
+
+// Estimate text width using font character width tables
 fn estimate_text_width(text: &str, font: &str, size: f32) -> f32 {
-    // Basic heuristics for Standard14 fonts
-    let avg_width_ratio = match font {
-        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => 0.60, // Monospace
-        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" => 0.45,
-        _ => 0.50, // Helvetica/Arial approx
+    let widths = if font.starts_with("Times") {
+        &TIMES_ROMAN_WIDTHS
+    } else if font.starts_with("Courier") {
+        // Courier is monospace (600 units)
+        return text.chars().count() as f32 * size * 0.60;
+    } else {
+        &HELVETICA_WIDTHS
     };
 
-    // A bit more refinement: counting uppercase vs lowercase could improve this,
-    // but for now, simple length * ratio * size is "good enough" for visual centering.
-    let len = text.chars().count() as f32;
-    len * size * avg_width_ratio
+    let mut total_width = 0.0;
+    for c in text.chars() {
+        let char_code = c as usize;
+        let char_width = if char_code < 128 {
+            widths[char_code] as f32
+        } else {
+            // Fallback for non-ASCII: use a generic average width for proportional fonts
+            600.0
+        };
+        total_width += char_width;
+    }
+
+    (total_width / 1000.0) * size
 }
+
+// Helper: Resolve configurations directory
 
 #[tauri::command]
 fn add_watermark(
@@ -196,8 +239,28 @@ fn add_watermark(
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("Invalid filename")?;
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let output_filename = format!("{}_marked.pdf", stem);
+
+    // Determine Output Directory
+    let parent = if config.export_path.is_empty() || config.export_path == "SOURCE" {
+        path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        PathBuf::from(&config.export_path)
+    };
+
+    // Ensure output directory exists if custom
+    if !parent.exists() {
+        fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    }
+
+    // Determine Output Filename Suffix
+    // Replace {} in suffix with user_text if present, otherwise just append suffix
+    let suffix = if config.export_suffix.contains("{}") {
+        config.export_suffix.replace("{}", &user_text)
+    } else {
+        config.export_suffix.clone()
+    };
+
+    let output_filename = format!("{}{}.pdf", stem, suffix);
     let output_path = parent.join(output_filename);
 
     let mut doc = Document::load(&input_path).map_err(|e| e.to_string())?;
@@ -217,7 +280,7 @@ fn add_watermark(
 
     // Calculate offsets based on alignment strategy
     let text_width = estimate_text_width(&final_text, &config.font_family, config.font_size);
-    
+
     // Determine alignment ratio (0.0 = Left/Start, 0.5 = Center, 1.0 = Right/End)
     let x_align_ratio = match config.position.as_str() {
         "TopLeft" | "BottomLeft" => 0.0,
@@ -354,17 +417,24 @@ fn add_watermark(
         let points = if config.is_repeated {
             // Generate grid of points
             let mut pts = Vec::new();
-            let step_x = match config.spacing.as_str() {
-                "Tight" => 200.0,
-                "Loose" => 400.0,
-                _ => 300.0,
-            };
-            let step_y = match config.spacing.as_str() {
-                "Tight" => 200.0,
-                "Loose" => 400.0,
-                _ => 300.0,
+
+            // Dynamic Spacing Calculation
+            // We want gap to be proportional to text size
+            // Normal = 1.0 * width gap? No, that's too wide.
+            // Let's say:
+            // Tight: Gap = 20% of width, 20% of height
+            // Normal: Gap = 50% of width, 50% of height
+            // Loose: Gap = 100% of width, 100% of height
+
+            let gap_ratio = match config.spacing.as_str() {
+                "Tight" => 0.2,
+                "Loose" => 1.0,
+                _ => 0.5,
             };
 
+            // Ensure step is at least somewhat larger than the text itself
+            let step_x = text_width + (text_width * gap_ratio);
+            let step_y = config.font_size + (config.font_size * gap_ratio * 4.0); // Font size is height, multiply gap for better vertical spacing
             let mut cur_y = 50.0;
             while cur_y < height {
                 let mut cur_x = 50.0;
@@ -454,7 +524,7 @@ fn add_watermark(
                 ("BaseFont", config.font_family.as_str().into()),
             ]));
 
-            if let Ok(mut page_dict) = doc.get_object_mut(object_id).and_then(|o| o.as_dict_mut()) {
+            if let Ok(page_dict) = doc.get_object_mut(object_id).and_then(|o| o.as_dict_mut()) {
                 if !page_dict.has(b"Resources") {
                     page_dict.set(b"Resources", lopdf::Dictionary::new());
                 }

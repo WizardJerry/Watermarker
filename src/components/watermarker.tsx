@@ -34,6 +34,8 @@ interface WatermarkConfig {
     rotation: number;
     is_repeated: boolean;
     spacing: string;
+    export_path: string;
+    export_suffix: string;
 }
 
 interface UploadedFile {
@@ -52,7 +54,9 @@ const DEFAULT_CONFIG: WatermarkConfig = {
     position: "Center",
     rotation: 45,
     is_repeated: false,
-    spacing: "Normal"
+    spacing: "Normal",
+    export_path: "",
+    export_suffix: "_marked"
 };
 
 const WatermarkPage: React.FC = () => {
@@ -491,6 +495,59 @@ const WatermarkPage: React.FC = () => {
                                     </div>
                                 </div>
 
+                                {/* Export Configuration Row */}
+                                <div className="grid grid-cols-2 gap-4">
+                                    {/* Export Path */}
+                                    <div className="space-y-1.5">
+                                        <label className="text-xs text-slate-500 font-medium ml-1">EXPORT LOCATION</label>
+                                        <div className="flex gap-2">
+                                            <div className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-slate-300 truncate">
+                                                {editingConfig.export_path === "" ? (
+                                                    <span className="text-slate-500 italic">Same as source folder</span>
+                                                ) : (
+                                                    editingConfig.export_path
+                                                )}
+                                            </div>
+                                            <button
+                                                onClick={async () => {
+                                                    const selected = await open({
+                                                        directory: true,
+                                                        multiple: false,
+                                                    });
+                                                    if (selected && typeof selected === 'string') {
+                                                        setEditingConfig({ ...editingConfig, export_path: selected });
+                                                    }
+                                                }}
+                                                className="px-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-slate-300 transition-colors"
+                                                title="Select Custom Folder"
+                                            >
+                                                <FolderOpen size={16} />
+                                            </button>
+                                            {editingConfig.export_path !== "" && (
+                                                <button
+                                                    onClick={() => setEditingConfig({ ...editingConfig, export_path: "" })}
+                                                    className="px-3 bg-white/5 hover:bg-red-500/20 border border-white/10 rounded-xl text-slate-300 hover:text-red-400 transition-colors"
+                                                    title="Reset to Source Folder"
+                                                >
+                                                    <X size={16} />
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Export Suffix */}
+                                    <div className="space-y-1.5">
+                                        <label className="text-xs text-slate-500 font-medium ml-1">FILE SUFFIX (Use {'{}'} for placeholder)</label>
+                                        <input
+                                            type="text"
+                                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:ring-1 focus:ring-indigo-500/50 focus:outline-none"
+                                            value={editingConfig.export_suffix}
+                                            onChange={(e) => setEditingConfig({ ...editingConfig, export_suffix: e.target.value })}
+                                            placeholder="_marked"
+                                        />
+                                    </div>
+                                </div>
+
                                 {/* Appearance Row */}
                                 <div className="grid grid-cols-4 gap-4">
                                     <div className="col-span-2 space-y-1.5">
@@ -541,8 +598,8 @@ const WatermarkPage: React.FC = () => {
                                                     key={pos}
                                                     onClick={() => setEditingConfig({ ...editingConfig, position: pos })}
                                                     className={`rounded-lg transition-all border ${editingConfig.position === pos
-                                                            ? 'bg-indigo-500 border-indigo-400 text-white'
-                                                            : 'bg-white/5 border-transparent hover:bg-white/10 text-slate-500'
+                                                        ? 'bg-indigo-500 border-indigo-400 text-white'
+                                                        : 'bg-white/5 border-transparent hover:bg-white/10 text-slate-500'
                                                         }`}
                                                 >
                                                     <div className="w-full h-full flex items-center justify-center">
@@ -603,8 +660,8 @@ const WatermarkPage: React.FC = () => {
                                                                 key={s}
                                                                 onClick={() => setEditingConfig({ ...editingConfig, spacing: s })}
                                                                 className={`px-3 py-1.5 text-xs rounded-lg border ${editingConfig.spacing === s
-                                                                        ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
-                                                                        : 'bg-black/20 border-white/10 text-slate-400 hover:bg-white/5'
+                                                                    ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                                                                    : 'bg-black/20 border-white/10 text-slate-400 hover:bg-white/5'
                                                                     }`}
                                                             >
                                                                 {s}
