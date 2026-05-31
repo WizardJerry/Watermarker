@@ -1,7 +1,6 @@
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, StringFormat};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -235,6 +234,10 @@ fn add_watermark(
     println!("Processing: {}", input_path);
 
     let path = Path::new(&input_path);
+    if !path.exists() {
+        return Err(format!("Input PDF does not exist: {}", input_path));
+    }
+
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -262,6 +265,9 @@ fn add_watermark(
 
     let output_filename = format!("{}{}.pdf", stem, suffix);
     let output_path = parent.join(output_filename);
+    if output_path == path {
+        return Err("Output path is the same as input path. Please set an export suffix.".to_string());
+    }
 
     let mut doc = Document::load(&input_path).map_err(|e| e.to_string())?;
 
@@ -544,6 +550,12 @@ fn add_watermark(
     }
 
     doc.save(&output_path).map_err(|e| e.to_string())?;
+    if !output_path.exists() {
+        return Err(format!(
+            "Watermark operation finished, but output file was not found: {}",
+            output_path.display()
+        ));
+    }
     Ok(format!("Saved to {}", output_path.display()))
 }
 
@@ -552,11 +564,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::DragDrop(event) = event {
-                // ... existing drag drop logging
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             add_watermark,
             get_all_configs,
@@ -566,4 +573,66 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::dictionary;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir() -> PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_millis();
+        std::env::temp_dir().join(format!("watermarker-test-{}", millis))
+    }
+
+    fn write_minimal_pdf(path: &Path) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Stream::new(lopdf::Dictionary::new(), Vec::new()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 300.into(), 300.into()],
+            "Contents" => content_id,
+            "Resources" => lopdf::Dictionary::new(),
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).expect("minimal PDF should be saved");
+    }
+
+    #[test]
+    fn add_watermark_creates_output_pdf() {
+        let dir = unique_test_dir();
+        fs::create_dir_all(&dir).expect("test dir should be created");
+        let input_path = dir.join("input.pdf");
+        let output_path = dir.join("input_marked.pdf");
+        write_minimal_pdf(&input_path);
+
+        let result = add_watermark(
+            input_path.to_string_lossy().to_string(),
+            "TEST".to_string(),
+            WatermarkConfig::default(),
+        );
+
+        assert!(result.is_ok(), "watermark command failed: {:?}", result);
+        assert!(output_path.exists(), "expected output PDF was not generated");
+
+        let _ = fs::remove_dir_all(dir);
+    }
 }

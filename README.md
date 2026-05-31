@@ -1,73 +1,96 @@
-# Tauri + React + Typescript
+# Watermarker
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Watermarker 是一个用于给 PDF 批量添加文字水印的桌面应用。项目基于 Tauri、React、TypeScript 和 Rust 构建，当前主要面向本地文件处理场景。
 
-## Recommended IDE Setup
+## 主要功能
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- 批量选择或拖拽导入 PDF 文件。
+- 使用配置模板生成水印文本，支持 `{}` 占位符。
+- 管理多个水印配置，包括新增、修改、导入、保存为新配置和删除。
+- 设置水印字体、字号、颜色、透明度、旋转角度、位置和重复铺满。
+- 配置导出目录和导出文件后缀。
 
-# How to bulid
+## 使用方法
 
-as a beginer, I'd like to record environment setup for myself
+1. 启动应用。
+2. 将 PDF 文件拖入主区域，或点击上传区域选择文件。
+3. 在底部配置栏选择水印配置。
+4. 在右侧输入需要插入到 `{}` 占位符中的文本。
+5. 点击开始处理，应用会生成带水印的新 PDF 文件。
 
-Using Scoop as your Windows package management tool:
-install environment using scoop:
+如果配置中的导出目录为空，处理结果会默认输出到源 PDF 所在目录。文件名会使用配置中的后缀，例如 `example_marked.pdf`。
 
-``` shell
+## 水印配置说明
+
+配置文件为 JSON 格式，应用会在本地 `configs` 目录中读取和保存配置。首次运行时会自动创建默认配置。
+
+常用配置字段：
+
+- `name`：配置名称。
+- `text`：水印文本模板，使用 `{}` 插入用户输入内容。
+- `font_size`：字号。
+- `font_family`：字体，目前主要使用 PDF 标准字体，如 `Helvetica`、`Times-Roman`、`Courier`。
+- `color`：十六进制颜色，例如 `#808080`。
+- `opacity`：透明度，范围通常为 `0.1` 到 `1`。
+- `position`：水印位置，例如 `Center`、`TopLeft`、`BottomRight`。
+- `rotation`：旋转角度。
+- `is_repeated`：是否重复铺满页面。
+- `spacing`：重复水印间距，可选 `Loose`、`Normal`、`Tight`。
+- `export_path`：自定义导出目录，空字符串表示源文件目录。
+- `export_suffix`：导出文件后缀，可使用 `{}` 占位符。
+
+## 本地运行
+
+### 环境要求
+
+- Node.js
+- Rust
+- Microsoft C++ Build Tools（Windows 上构建 Tauri/Rust 项目需要）
+
+如果使用 Scoop 管理 Windows 开发环境，可以安装：
+
+```shell
 scoop install nodejs
 scoop install rustup
 ```
 
-When rustup was installed, there will be a note to construct you to install microsoft C++ tool:
-```
-Notes
------
-This package defaults to using the MSVC toolchain in new installs; use "rustup set default-host" to configure it
-(existing installs may be using the GNU toolchain by default)
-According to https://doc.rust-lang.org/book/ch01-01-installation.html#installing-rustup-on-windows
-Microsoft C++ Build Tools is needed and can be downloaded here:
-https://visualstudio.microsoft.com/visual-cpp-build-tools/
-When installing build tools, these two components should be selected:
+安装 Rust 后，请确认已安装 Microsoft C++ Build Tools，并至少选择：
+
 - MSVC - VS C++ x64/x86 build tools
 - Windows SDK
-```
 
-Verify your environment by:
-``` shell
+验证环境：
+
+```shell
 rustc --version
 node -v
 ```
-<!-- How to verify MSVC installation? -->
 
+### 开发模式
 
-# How to run
-
-Make sure you have finished environment configuration, and enter directory of this repositery, run command below for debug
-
-``` shell
+```shell
 npm install
 npm run tauri dev
 ```
 
+### 构建前端
 
-# TODO list
-## FIX
-- [x] 水印位置需要根据字号计算长度，来保证在选择的位置上可以保持居中
-    - [x] 该功能只需要在上下左右中实现，四角左边使用句首，右边使用句尾
-- [ ] 铺满功能需要经过计算，来保证铺满后水印的大小合适
-- [ ] 界面UI默认情况下文件选择框bug
-- [ ] Media Box 信息获取的方法更新，参考注释
-- [ ] 目前在PDF中看到有偏右的情况，需要再确认
+```shell
+npm run build
+```
 
-## Features
-- [x] 配置 - 设置默认配置
-- [ ] 预览功能
-- [ ] 字体格式选择 添加Arial等免费商用字体
-- [ ] 字体透明度功能
-- [ ] 配色更改去AI化
-- [ ] 水印进度条，完成消息弹窗更改为界面上动画，或触发windows消息接口
-- [ ] 队列中任务全部删除按钮
-- [ ] 配置中选择文件下载位置（源文件同目录或是指定目录，默认download）
-- [ ] 后缀自定义
-- [ ] gemini 中构建绿色软件的建议
-- [ ] 点击开始按钮后将按钮无效化，防止连续点击
+### 打包桌面应用
+
+```shell
+npm run tauri build
+```
+
+## 近期待办
+
+更完整的开发记录、决策和路线图请见 `.codx/project.md`。
+
+- 修复默认状态下文件选择框相关 UI 问题。
+- 继续确认部分 PDF 中水印位置偏右的问题。
+- 优化重复铺满水印的尺寸和间距计算。
+- 增加预览功能。
+- 改进处理进度、完成提示和任务队列管理。

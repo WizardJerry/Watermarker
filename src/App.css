@@ -1,13 +1,11 @@
 @import "tailwindcss";
 
-/* 这里可以放一些全局的重置样式，特别是针对 Tauri 桌面应用的体验优化 */
 :root {
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
-  /* 禁用默认的右键菜单（可选，Tauri应用常用） */
-  /* user-select: none; */
+  color: #f8fafc;
+  background: #1f2023;
 }
 
 body {
@@ -15,4 +13,34 @@ body {
   padding: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #1f2023;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+* {
+  scrollbar-color: #6b6f78 #25272b;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #25272b;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #6b6f78;
+  border: 2px solid #25272b;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #858a94;
 }
