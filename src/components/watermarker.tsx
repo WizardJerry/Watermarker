@@ -11,7 +11,6 @@ import {
     File as FileIcon,
     FileText,
     FolderOpen,
-    Layers3,
     Play,
     Plus,
     Pin,
@@ -22,6 +21,7 @@ import {
     Upload,
     X,
 } from 'lucide-react';
+import logoUrl from '../assets/watermaker-logo.svg';
 
 interface WatermarkConfig {
     name: string;
@@ -118,6 +118,16 @@ const WatermarkPage: React.FC = () => {
         loadConfigs();
         loadAlwaysOnTopState();
     }, []);
+
+    useEffect(() => {
+        if (!processStatus) return;
+
+        const timeoutId = window.setTimeout(() => {
+            setProcessStatus(null);
+        }, 3000);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [processStatus]);
 
     const loadAlwaysOnTopState = async () => {
         try {
@@ -319,11 +329,14 @@ const WatermarkPage: React.FC = () => {
     const handleProcess = async () => {
         if (files.length === 0 || !selectedConfig || isProcessing) return;
 
+        if (selectedConfig.text.includes('{}') && watermarkText.trim().length === 0) {
+            const message = 'Watermark template contains {}, please enter text before processing.';
+            setProcessStatus({ type: 'error', message });
+            return;
+        }
+
         setIsProcessing(true);
-        setProcessStatus({
-            type: 'info',
-            message: `Processing ${files.length} file${files.length > 1 ? 's' : ''}...`,
-        });
+        setProcessStatus(null);
 
         const successes: string[] = [];
         const failures: string[] = [];
@@ -348,13 +361,11 @@ const WatermarkPage: React.FC = () => {
         if (failures.length > 0) {
             const message = `Processed ${successes.length}/${files.length} files. Failed: ${failures.join('; ')}`;
             setProcessStatus({ type: 'error', message });
-            alert(message);
             return;
         }
 
         const message = `Processing complete. Generated ${successes.length} file${successes.length > 1 ? 's' : ''}.`;
         setProcessStatus({ type: 'success', message });
-        alert(`${message}\n${successes.join('\n')}`);
     };
 
     return (
@@ -362,12 +373,14 @@ const WatermarkPage: React.FC = () => {
             <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-5 py-5 md:h-screen md:max-h-screen md:px-8">
                 <header className="mb-5 flex flex-shrink-0 items-center justify-between border-b border-[#3b3d42] pb-4">
                     <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#fbbc04] text-[#202124] shadow-sm">
-                            <Layers3 size={22} />
-                        </div>
-                        <div>
-                            <h1 className="text-xl font-semibold tracking-normal text-slate-50">Watermarker Pro</h1>
-                            <p className="text-sm text-slate-400">PDF watermark workspace</p>
+                        <img
+                            src={logoUrl}
+                            alt="Watermarker logo"
+                            className="h-11 w-11 flex-shrink-0 rounded-lg object-contain shadow-sm"
+                        />
+                        <div className="flex flex-col justify-center leading-none">
+                            <span className="text-xl font-semibold tracking-normal text-slate-50">ATER</span>
+                            <span className="mt-1 text-xl font-semibold tracking-normal text-slate-50">ARKER</span>
                         </div>
                     </div>
                     <button
@@ -495,25 +508,17 @@ const WatermarkPage: React.FC = () => {
                                 onChange={(event) => setWatermarkText(event.target.value)}
                             />
 
-                            {processStatus && (
-                                <div className={`mt-4 rounded-lg border px-3 py-2 text-sm ${
-                                    processStatus.type === 'success'
-                                        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                                        : processStatus.type === 'error'
-                                            ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                                            : 'border-[#fbbc04]/30 bg-[#fbbc04]/10 text-[#fdd663]'
-                                }`}>
-                                    {processStatus.message}
-                                </div>
-                            )}
-
                             <button
                                 type="button"
                                 className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#fbbc04] px-5 text-sm font-semibold text-[#202124] shadow-sm transition-all hover:bg-[#f9ab00] hover:shadow-md focus:outline-none focus-visible:ring-4 focus-visible:ring-[#fbbc04]/25 disabled:cursor-not-allowed disabled:bg-[#46484d] disabled:text-slate-500 disabled:shadow-none"
                                 disabled={files.length === 0 || !selectedConfigId || isProcessing}
                                 onClick={handleProcess}
                             >
-                                <Play size={18} fill="currentColor" />
+                                {isProcessing ? (
+                                    <span className="material-progress-ring" aria-hidden="true" />
+                                ) : (
+                                    <Play size={18} fill="currentColor" />
+                                )}
                                 {isProcessing ? 'Processing...' : 'Start processing'}
                             </button>
                         </section>
@@ -531,6 +536,19 @@ const WatermarkPage: React.FC = () => {
                     onSaveAsNew={() => handleSaveConfig(true)}
                     onSave={() => handleSaveConfig(false)}
                 />
+            )}
+
+            {processStatus && processStatus.type !== 'info' && (
+                <div
+                    role="status"
+                    className={`status-toast pointer-events-none fixed bottom-6 left-1/2 z-50 w-[calc(100%-2rem)] max-w-md rounded-lg border px-4 py-3 text-center text-sm font-medium shadow-lg ${
+                        processStatus.type === 'success'
+                            ? 'border-emerald-400/30 bg-[#173528] text-emerald-200 shadow-emerald-950/20'
+                            : 'border-red-400/30 bg-[#3a1d20] text-red-200 shadow-red-950/20'
+                    }`}
+                >
+                    {processStatus.message}
+                </div>
             )}
         </div>
     );

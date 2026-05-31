@@ -1,8 +1,12 @@
 use lopdf::content::{Content, Operation};
-use lopdf::{Document, Object, Stream, StringFormat};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const WATERMARK_FONT_RESOURCE: &str = "WMF1";
+const WATERMARK_GRAPHICS_STATE_RESOURCE: &str = "WMGS1";
+const MAX_REPEATED_AXIS_POINTS: usize = 25;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WatermarkConfig {
@@ -223,6 +227,371 @@ fn estimate_text_width(text: &str, font: &str, size: f32) -> f32 {
     (total_width / 1000.0) * size
 }
 
+fn repeated_row_gap_ratio(spacing: &str) -> f32 {
+    match spacing {
+        "Tight" => -0.25,
+        "Loose" => 0.70,
+        _ => 0.25,
+    }
+}
+
+fn repeated_column_gap_ratio(spacing: &str) -> f32 {
+    match spacing {
+        "Tight" => 0.12,
+        "Loose" => 0.45,
+        _ => 0.25,
+    }
+}
+
+fn fit_centered_axis_step(
+    page_extent: f32,
+    footprint_extent: f32,
+    target_step: f32,
+    min_footprint_factor: f32,
+) -> f32 {
+    let extent = page_extent.max(1.0);
+    let footprint = footprint_extent.max(1.0);
+    let minimum_step = footprint * min_footprint_factor;
+    let target = target_step.max(minimum_step);
+    let radius_with_bleed = (extent / 2.0) + footprint;
+    let rings = (radius_with_bleed / target).round().max(1.0);
+
+    (radius_with_bleed / rings).max(minimum_step)
+}
+
+fn centered_axis_offsets(page_extent: f32, footprint_extent: f32, step: f32) -> Vec<f32> {
+    let center = page_extent / 2.0;
+    let bleed = footprint_extent.max(1.0);
+    let mut offsets = vec![0.0];
+    let mut ring = 1;
+
+    while offsets.len() < MAX_REPEATED_AXIS_POINTS {
+        let distance = step * ring as f32;
+        let mut added = false;
+
+        if center - distance >= -bleed {
+            offsets.push(-distance);
+            added = true;
+        }
+
+        if offsets.len() < MAX_REPEATED_AXIS_POINTS && center + distance <= page_extent + bleed {
+            offsets.push(distance);
+            added = true;
+        }
+
+        if !added {
+            break;
+        }
+
+        ring += 1;
+    }
+
+    offsets
+}
+
+fn calculate_repeated_watermark_points(
+    page_width: f32,
+    page_height: f32,
+    text_width: f32,
+    font_size: f32,
+    rotation_radians: f32,
+    spacing: &str,
+) -> Vec<(f32, f32)> {
+    let page_width = page_width.max(1.0);
+    let page_height = page_height.max(1.0);
+    let text_width = text_width.max(font_size * 4.0).max(1.0);
+    let text_height = font_size.max(1.0);
+    let cos = rotation_radians.cos().abs();
+    let sin = rotation_radians.sin().abs();
+    let rotated_width = (text_width * cos + text_height * sin).max(font_size * 4.0);
+    let rotated_height = (text_width * sin + text_height * cos).max(font_size * 3.0);
+    let column_gap_ratio = repeated_column_gap_ratio(spacing);
+    let row_gap_ratio = repeated_row_gap_ratio(spacing);
+    let target_step_x = rotated_width * (1.0 + column_gap_ratio);
+    let target_step_y = rotated_height * (1.0 + row_gap_ratio);
+    let step_x = fit_centered_axis_step(page_width, rotated_width, target_step_x, 1.05);
+    let step_y = fit_centered_axis_step(page_height, rotated_height, target_step_y, 0.45);
+    let x_offsets = centered_axis_offsets(page_width, rotated_width, step_x);
+    let y_offsets = centered_axis_offsets(page_height, rotated_height, step_y);
+    let cx = page_width / 2.0;
+    let cy = page_height / 2.0;
+    let mut points = Vec::with_capacity(x_offsets.len() * y_offsets.len());
+
+    for y_offset in &y_offsets {
+        for x_offset in &x_offsets {
+            points.push((cx + x_offset, cy + y_offset));
+        }
+    }
+
+    points
+}
+
+fn add_font_to_resource_dict(
+    resources: &mut Dictionary,
+    font_resource_name: &[u8],
+    font_id: ObjectId,
+) -> Result<Option<ObjectId>, String> {
+    if !resources.has(b"Font") {
+        resources.set(b"Font", Dictionary::new());
+    }
+
+    match resources.get_mut(b"Font").map_err(|e| e.to_string())? {
+        Object::Dictionary(fonts) => {
+            fonts.set(font_resource_name.to_vec(), Object::Reference(font_id));
+            Ok(None)
+        }
+        Object::Reference(fonts_id) => Ok(Some(*fonts_id)),
+        _ => {
+            resources.set(b"Font", Dictionary::new());
+            let fonts = resources
+                .get_mut(b"Font")
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            fonts.set(font_resource_name.to_vec(), Object::Reference(font_id));
+            Ok(None)
+        }
+    }
+}
+
+fn add_font_to_resource_object(
+    doc: &mut Document,
+    resources_id: ObjectId,
+    font_resource_name: &[u8],
+    font_id: ObjectId,
+) -> Result<(), String> {
+    let referenced_font_dict_id = {
+        let resources = doc
+            .get_object_mut(resources_id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|e| e.to_string())?;
+        add_font_to_resource_dict(resources, font_resource_name, font_id)?
+    };
+
+    if let Some(fonts_id) = referenced_font_dict_id {
+        let fonts = doc
+            .get_object_mut(fonts_id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|e| e.to_string())?;
+        fonts.set(font_resource_name.to_vec(), Object::Reference(font_id));
+    }
+
+    Ok(())
+}
+
+fn add_graphics_state_to_resource_dict(
+    resources: &mut Dictionary,
+    graphics_state_name: &[u8],
+    graphics_state_id: ObjectId,
+) -> Result<Option<ObjectId>, String> {
+    if !resources.has(b"ExtGState") {
+        resources.set(b"ExtGState", Dictionary::new());
+    }
+
+    match resources.get_mut(b"ExtGState").map_err(|e| e.to_string())? {
+        Object::Dictionary(states) => {
+            states.set(
+                graphics_state_name.to_vec(),
+                Object::Reference(graphics_state_id),
+            );
+            Ok(None)
+        }
+        Object::Reference(states_id) => Ok(Some(*states_id)),
+        _ => {
+            resources.set(b"ExtGState", Dictionary::new());
+            let states = resources
+                .get_mut(b"ExtGState")
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            states.set(
+                graphics_state_name.to_vec(),
+                Object::Reference(graphics_state_id),
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn add_graphics_state_to_resource_object(
+    doc: &mut Document,
+    resources_id: ObjectId,
+    graphics_state_name: &[u8],
+    graphics_state_id: ObjectId,
+) -> Result<(), String> {
+    let referenced_state_dict_id = {
+        let resources = doc
+            .get_object_mut(resources_id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|e| e.to_string())?;
+        add_graphics_state_to_resource_dict(resources, graphics_state_name, graphics_state_id)?
+    };
+
+    if let Some(states_id) = referenced_state_dict_id {
+        let states = doc
+            .get_object_mut(states_id)
+            .and_then(Object::as_dict_mut)
+            .map_err(|e| e.to_string())?;
+        states.set(
+            graphics_state_name.to_vec(),
+            Object::Reference(graphics_state_id),
+        );
+    }
+
+    Ok(())
+}
+
+fn ensure_page_watermark_font(
+    doc: &mut Document,
+    page_id: ObjectId,
+    font_resource_name: &[u8],
+    font_id: ObjectId,
+) -> Result<(), String> {
+    let direct_resources_ref = doc
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .ok()
+        .and_then(|page| page.get(b"Resources").and_then(Object::as_reference).ok());
+
+    if let Some(resources_id) = direct_resources_ref {
+        return add_font_to_resource_object(doc, resources_id, font_resource_name, font_id);
+    }
+
+    let has_direct_inline_resources = doc
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .ok()
+        .and_then(|page| page.get(b"Resources").and_then(Object::as_dict).ok())
+        .is_some();
+
+    if has_direct_inline_resources {
+        let referenced_font_dict_id = {
+            let page = doc
+                .get_object_mut(page_id)
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            let resources = page
+                .get_mut(b"Resources")
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            add_font_to_resource_dict(resources, font_resource_name, font_id)?
+        };
+
+        if let Some(fonts_id) = referenced_font_dict_id {
+            let fonts = doc
+                .get_object_mut(fonts_id)
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            fonts.set(font_resource_name.to_vec(), Object::Reference(font_id));
+        }
+
+        return Ok(());
+    }
+
+    let inherited_resource_ids = doc
+        .get_page_resources(page_id)
+        .map(|(_, ids)| ids)
+        .unwrap_or_default();
+
+    if let Some(resources_id) = inherited_resource_ids.first().copied() {
+        return add_font_to_resource_object(doc, resources_id, font_resource_name, font_id);
+    }
+
+    let page = doc
+        .get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|e| e.to_string())?;
+    page.set(b"Resources", Dictionary::new());
+    let resources = page
+        .get_mut(b"Resources")
+        .and_then(Object::as_dict_mut)
+        .map_err(|e| e.to_string())?;
+    add_font_to_resource_dict(resources, font_resource_name, font_id)?;
+
+    Ok(())
+}
+
+fn ensure_page_watermark_graphics_state(
+    doc: &mut Document,
+    page_id: ObjectId,
+    graphics_state_name: &[u8],
+    graphics_state_id: ObjectId,
+) -> Result<(), String> {
+    let direct_resources_ref = doc
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .ok()
+        .and_then(|page| page.get(b"Resources").and_then(Object::as_reference).ok());
+
+    if let Some(resources_id) = direct_resources_ref {
+        return add_graphics_state_to_resource_object(
+            doc,
+            resources_id,
+            graphics_state_name,
+            graphics_state_id,
+        );
+    }
+
+    let has_direct_inline_resources = doc
+        .get_object(page_id)
+        .and_then(Object::as_dict)
+        .ok()
+        .and_then(|page| page.get(b"Resources").and_then(Object::as_dict).ok())
+        .is_some();
+
+    if has_direct_inline_resources {
+        let referenced_state_dict_id = {
+            let page = doc
+                .get_object_mut(page_id)
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            let resources = page
+                .get_mut(b"Resources")
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            add_graphics_state_to_resource_dict(resources, graphics_state_name, graphics_state_id)?
+        };
+
+        if let Some(states_id) = referenced_state_dict_id {
+            let states = doc
+                .get_object_mut(states_id)
+                .and_then(Object::as_dict_mut)
+                .map_err(|e| e.to_string())?;
+            states.set(
+                graphics_state_name.to_vec(),
+                Object::Reference(graphics_state_id),
+            );
+        }
+
+        return Ok(());
+    }
+
+    let inherited_resource_ids = doc
+        .get_page_resources(page_id)
+        .map(|(_, ids)| ids)
+        .unwrap_or_default();
+
+    if let Some(resources_id) = inherited_resource_ids.first().copied() {
+        return add_graphics_state_to_resource_object(
+            doc,
+            resources_id,
+            graphics_state_name,
+            graphics_state_id,
+        );
+    }
+
+    let page = doc
+        .get_object_mut(page_id)
+        .and_then(Object::as_dict_mut)
+        .map_err(|e| e.to_string())?;
+    page.set(b"Resources", Dictionary::new());
+    let resources = page
+        .get_mut(b"Resources")
+        .and_then(Object::as_dict_mut)
+        .map_err(|e| e.to_string())?;
+    add_graphics_state_to_resource_dict(resources, graphics_state_name, graphics_state_id)?;
+
+    Ok(())
+}
+
 // Helper: Resolve configurations directory
 
 #[tauri::command]
@@ -266,12 +635,20 @@ fn add_watermark(
     let output_filename = format!("{}{}.pdf", stem, suffix);
     let output_path = parent.join(output_filename);
     if output_path == path {
-        return Err("Output path is the same as input path. Please set an export suffix.".to_string());
+        return Err(
+            "Output path is the same as input path. Please set an export suffix.".to_string(),
+        );
     }
 
     let mut doc = Document::load(&input_path).map_err(|e| e.to_string())?;
 
     // Prepare content text
+    if config.text.contains("{}") && user_text.trim().is_empty() {
+        return Err(
+            "Watermark template contains {}, please enter text before processing.".to_string(),
+        );
+    }
+
     let final_text = config.text.replace("{}", &user_text);
     if final_text.trim().is_empty() {
         return Err("Watermark text is empty".to_string());
@@ -280,6 +657,18 @@ fn add_watermark(
     println!("Watermark text: {}", final_text);
 
     let (r, g, b) = parse_color(&config.color);
+    let opacity = config.opacity.clamp(0.0, 1.0);
+    let font_id = doc.add_object(Dictionary::from_iter(vec![
+        ("Type", "Font".into()),
+        ("Subtype", "Type1".into()),
+        ("BaseFont", config.font_family.as_str().into()),
+        ("Encoding", "WinAnsiEncoding".into()),
+    ]));
+    let graphics_state_id = doc.add_object(Dictionary::from_iter(vec![
+        ("Type", "ExtGState".into()),
+        ("ca", opacity.into()),
+        ("CA", opacity.into()),
+    ]));
     let rad = config.rotation.to_radians();
     let cos_theta = rad.cos();
     let sin_theta = rad.sin();
@@ -403,62 +792,47 @@ fn add_watermark(
         let mut ops = Vec::new();
         ops.push(Operation::new("q", vec![])); // Save graphics state
 
+        ops.push(Operation::new(
+            "gs",
+            vec![WATERMARK_GRAPHICS_STATE_RESOURCE.into()],
+        ));
+
         // Set Color (RGB non-stroking)
         ops.push(Operation::new("rg", vec![r.into(), g.into(), b.into()]));
-
-        // Set Font
-        // Hardcoded generic font F1 mapping to Standard14 (handled usually by consumer or existing resource).
-        // Since we don't have a Font Manager here, we assume the Page Resources has F1 or we add it?
-        // Actually, previous code assumed "F1" existed or LOPDF creates it?
-        // LOPDF doesn't auto-create resources.
-        // Previous working code: Operation::new("Tf", vec!["F1".into(), 48.into()]),
-        // If F1 is not defined in Page Resources, user might see nothing or error in Reader.
-        // We will stick to "F1" and hope existing logic or previous simple example implies it worked or we need to add it.
-        // *Correction*: To be safe, we should add F1 to Resources if we can.
-        // But for this task, I'll follow previous pattern.
 
         // Transformation Matrix
         // If repeated, we loop. If single, we do once.
 
         let points = if config.is_repeated {
-            // Generate grid of points
-            let mut pts = Vec::new();
-
-            // Dynamic Spacing Calculation
-            // We want gap to be proportional to text size
-            // Normal = 1.0 * width gap? No, that's too wide.
-            // Let's say:
-            // Tight: Gap = 20% of width, 20% of height
-            // Normal: Gap = 50% of width, 50% of height
-            // Loose: Gap = 100% of width, 100% of height
-
-            let gap_ratio = match config.spacing.as_str() {
-                "Tight" => 0.2,
-                "Loose" => 1.0,
-                _ => 0.5,
-            };
-
-            // Ensure step is at least somewhat larger than the text itself
-            let step_x = text_width + (text_width * gap_ratio);
-            let step_y = config.font_size + (config.font_size * gap_ratio * 4.0); // Font size is height, multiply gap for better vertical spacing
-            let mut cur_y = 50.0;
-            while cur_y < height {
-                let mut cur_x = 50.0;
-                while cur_x < width {
-                    pts.push((cur_x, cur_y));
-                    cur_x += step_x;
-                }
-                cur_y += step_y;
-            }
-            pts
+            calculate_repeated_watermark_points(
+                width,
+                height,
+                text_width,
+                config.font_size,
+                rad,
+                &config.spacing,
+            )
         } else {
             vec![(x, y)]
         };
+        let text_offset_x = if config.is_repeated {
+            -text_width * 0.5
+        } else {
+            offset_x
+        };
 
         ops.push(Operation::new("BT", vec![])); // Begin Text
+
+        // Reset text state that may be left behind by generated PDFs.
+        ops.push(Operation::new("Tc", vec![0.into()])); // Character spacing
+        ops.push(Operation::new("Tw", vec![0.into()])); // Word spacing
+        ops.push(Operation::new("Tz", vec![100.into()])); // Horizontal scaling
+        ops.push(Operation::new("TL", vec![config.font_size.into()]));
+        ops.push(Operation::new("Tr", vec![0.into()])); // Fill text rendering mode
+        ops.push(Operation::new("Ts", vec![0.into()])); // Text rise
         ops.push(Operation::new(
             "Tf",
-            vec!["F1".into(), config.font_size.into()],
+            vec![WATERMARK_FONT_RESOURCE.into(), config.font_size.into()],
         ));
 
         for (px, py) in points {
@@ -480,7 +854,10 @@ fn add_watermark(
             ));
 
             // Shift origin relative to rotation to center the text
-            ops.push(Operation::new("Td", vec![offset_x.into(), offset_y.into()]));
+            ops.push(Operation::new(
+                "Td",
+                vec![text_offset_x.into(), offset_y.into()],
+            ));
 
             ops.push(Operation::new(
                 "Tj",
@@ -499,9 +876,6 @@ fn add_watermark(
             content.operations.push(op);
         }
 
-        // Add Fonts to Resources! (Crucial fix if F1 is missing)
-        // We need to ensure /Resources /Font /F1 -> /BaseFont /Helvetica
-
         // Correct approach: Add the new content stream as a new object, then update the page to reference it.
         // Note: This replaces all previous content streams with this single merged one.
         let stream_obj = Stream::new(lopdf::Dictionary::new(), content.encode().unwrap());
@@ -511,42 +885,18 @@ fn add_watermark(
             page_dict.set(b"Contents", Object::Reference(new_content_id));
         }
 
-        // Check if F1 exists before borrowing mutably
-        let has_f1 = doc
-            .get_object(object_id)
-            .and_then(|o| o.as_dict())
-            .and_then(|d| d.get(b"Resources"))
-            .and_then(|o| o.as_dict())
-            .and_then(|d| d.get(b"Font"))
-            .and_then(|o| o.as_dict())
-            .map(|d| d.has(b"F1"))
-            .unwrap_or(false);
-
-        if !has_f1 {
-            // Create Font Object
-            let font_id = doc.add_object(lopdf::Dictionary::from_iter(vec![
-                ("Type", "Font".into()),
-                ("Subtype", "Type1".into()),
-                ("BaseFont", config.font_family.as_str().into()),
-            ]));
-
-            if let Ok(page_dict) = doc.get_object_mut(object_id).and_then(|o| o.as_dict_mut()) {
-                if !page_dict.has(b"Resources") {
-                    page_dict.set(b"Resources", lopdf::Dictionary::new());
-                }
-                if let Ok(resources) = page_dict
-                    .get_mut(b"Resources")
-                    .and_then(|o| o.as_dict_mut())
-                {
-                    if !resources.has(b"Font") {
-                        resources.set(b"Font", lopdf::Dictionary::new());
-                    }
-                    if let Ok(fonts) = resources.get_mut(b"Font").and_then(|o| o.as_dict_mut()) {
-                        fonts.set(b"F1", Object::Reference(font_id));
-                    }
-                }
-            }
-        }
+        ensure_page_watermark_font(
+            &mut doc,
+            object_id,
+            WATERMARK_FONT_RESOURCE.as_bytes(),
+            font_id,
+        )?;
+        ensure_page_watermark_graphics_state(
+            &mut doc,
+            object_id,
+            WATERMARK_GRAPHICS_STATE_RESOURCE.as_bytes(),
+            graphics_state_id,
+        )?;
     }
 
     doc.save(&output_path).map_err(|e| e.to_string())?;
@@ -582,11 +932,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_test_dir() -> PathBuf {
-        let millis = SystemTime::now()
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
-            .as_millis();
-        std::env::temp_dir().join(format!("watermarker-test-{}", millis))
+            .as_nanos();
+        std::env::temp_dir().join(format!("watermarker-test-{}-{}", std::process::id(), nanos))
     }
 
     fn write_minimal_pdf(path: &Path) {
@@ -616,6 +966,175 @@ mod tests {
         doc.save(path).expect("minimal PDF should be saved");
     }
 
+    fn write_pdf_with_existing_text_state(path: &Path) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+        });
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tc", vec![Object::Integer(-30)]),
+                Operation::new("Tw", vec![Object::Integer(-20)]),
+                Operation::new("Tz", vec![Object::Integer(25)]),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(
+            lopdf::Dictionary::new(),
+            content.encode().expect("content should encode"),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 300.into(), 300.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).expect("PDF with text state should be saved");
+    }
+
+    fn object_as_f32(object: &Object) -> Option<f32> {
+        match object {
+            Object::Integer(value) => Some(*value as f32),
+            Object::Real(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn has_numeric_operation(operations: &[Operation], operator: &str, expected: f32) -> bool {
+        operations.iter().any(|operation| {
+            operation.operator == operator
+                && operation
+                    .operands
+                    .first()
+                    .and_then(object_as_f32)
+                    .is_some_and(|value| (value - expected).abs() < f32::EPSILON)
+        })
+    }
+
+    #[test]
+    fn repeated_watermark_points_are_centered_and_density_based() {
+        let tight = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            180.0,
+            48.0,
+            45f32.to_radians(),
+            "Tight",
+        );
+        let normal = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            180.0,
+            48.0,
+            45f32.to_radians(),
+            "Normal",
+        );
+        let loose = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            180.0,
+            48.0,
+            45f32.to_radians(),
+            "Loose",
+        );
+
+        assert_eq!(normal.first().copied(), Some((300.0, 400.0)));
+        assert!(
+            tight.len() > normal.len() && normal.len() > loose.len(),
+            "expected tight > normal > loose point counts, got {} > {} > {}",
+            tight.len(),
+            normal.len(),
+            loose.len()
+        );
+        assert!(normal.iter().any(|point| *point == (300.0, 400.0)));
+
+        for (x, y) in &normal {
+            let mirrored_x = 600.0 - x;
+            let mirrored_y = 800.0 - y;
+            assert!(normal
+                .iter()
+                .any(|point| (point.0 - mirrored_x).abs() < 0.01 && (point.1 - *y).abs() < 0.01));
+            assert!(normal
+                .iter()
+                .any(|point| (point.0 - *x).abs() < 0.01 && (point.1 - mirrored_y).abs() < 0.01));
+        }
+    }
+
+    #[test]
+    fn repeated_watermark_points_allow_partial_edge_marks_for_large_text() {
+        let points = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            900.0,
+            150.0,
+            45f32.to_radians(),
+            "Tight",
+        );
+
+        assert_eq!(points.first().copied(), Some((300.0, 400.0)));
+        assert!(
+            points.len() > 1,
+            "large repeated watermark should still generate edge marks"
+        );
+        assert!(points
+            .iter()
+            .any(|(x, y)| *x < 0.0 || *x > 600.0 || *y < 0.0 || *y > 800.0));
+    }
+
+    #[test]
+    fn repeated_watermark_columns_expand_for_long_text() {
+        let short = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            120.0,
+            48.0,
+            45f32.to_radians(),
+            "Tight",
+        );
+        let long = calculate_repeated_watermark_points(
+            600.0,
+            800.0,
+            520.0,
+            48.0,
+            45f32.to_radians(),
+            "Tight",
+        );
+        let count_columns = |points: &[(f32, f32)]| -> usize {
+            let center_row_y = points.first().expect("points should include center").1;
+            points
+                .iter()
+                .filter(|(_, y)| (*y - center_row_y).abs() < 0.01)
+                .count()
+        };
+
+        assert!(
+            count_columns(&short) > count_columns(&long),
+            "longer text should produce fewer, wider-spaced columns"
+        );
+    }
+
     #[test]
     fn add_watermark_creates_output_pdf() {
         let dir = unique_test_dir();
@@ -631,7 +1150,127 @@ mod tests {
         );
 
         assert!(result.is_ok(), "watermark command failed: {:?}", result);
-        assert!(output_path.exists(), "expected output PDF was not generated");
+        assert!(
+            output_path.exists(),
+            "expected output PDF was not generated"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn add_watermark_resets_inherited_text_state_and_uses_own_font() {
+        let dir = unique_test_dir();
+        fs::create_dir_all(&dir).expect("test dir should be created");
+        let input_path = dir.join("input.pdf");
+        let output_path = dir.join("input_marked.pdf");
+        write_pdf_with_existing_text_state(&input_path);
+
+        let result = add_watermark(
+            input_path.to_string_lossy().to_string(),
+            "ABC DEF".to_string(),
+            WatermarkConfig::default(),
+        );
+
+        assert!(result.is_ok(), "watermark command failed: {:?}", result);
+
+        let doc = Document::load(&output_path).expect("output PDF should load");
+        let page_id = *doc
+            .get_pages()
+            .values()
+            .next()
+            .expect("output PDF should have a page");
+        let content_data = doc
+            .get_page_content(page_id)
+            .expect("page content should decode");
+        let content = Content::decode(&content_data).expect("content stream should decode");
+        let watermark_start = content
+            .operations
+            .iter()
+            .rposition(|operation| operation.operator == "BT")
+            .expect("watermark text object should exist");
+        let watermark_ops = &content.operations[watermark_start..];
+
+        assert!(has_numeric_operation(watermark_ops, "Tc", 0.0));
+        assert!(has_numeric_operation(watermark_ops, "Tw", 0.0));
+        assert!(has_numeric_operation(watermark_ops, "Tz", 100.0));
+        assert!(has_numeric_operation(watermark_ops, "Tr", 0.0));
+        assert!(has_numeric_operation(watermark_ops, "Ts", 0.0));
+
+        let tf = watermark_ops
+            .iter()
+            .find(|operation| operation.operator == "Tf")
+            .expect("watermark should select a font");
+        assert_eq!(
+            tf.operands
+                .first()
+                .and_then(|operand| operand.as_name().ok()),
+            Some(WATERMARK_FONT_RESOURCE.as_bytes())
+        );
+
+        let gs = content
+            .operations
+            .iter()
+            .find(|operation| operation.operator == "gs")
+            .expect("watermark should apply an opacity graphics state");
+        assert_eq!(
+            gs.operands
+                .first()
+                .and_then(|operand| operand.as_name().ok()),
+            Some(WATERMARK_GRAPHICS_STATE_RESOURCE.as_bytes())
+        );
+
+        let fonts = doc
+            .get_page_fonts(page_id)
+            .expect("page fonts should be readable");
+        assert!(fonts.contains_key(&b"F1".to_vec()));
+        assert!(fonts.contains_key(&WATERMARK_FONT_RESOURCE.as_bytes().to_vec()));
+
+        let page = doc
+            .get_object(page_id)
+            .and_then(Object::as_dict)
+            .expect("page dictionary should be readable");
+        let graphics_states = page
+            .get(b"Resources")
+            .and_then(Object::as_dict)
+            .and_then(|resources| resources.get(b"ExtGState"))
+            .and_then(Object::as_dict)
+            .expect("page should include graphics states");
+        let watermark_graphics_state_id = graphics_states
+            .get(WATERMARK_GRAPHICS_STATE_RESOURCE.as_bytes())
+            .and_then(Object::as_reference)
+            .expect("watermark graphics state should be registered");
+        let watermark_graphics_state = doc
+            .get_object(watermark_graphics_state_id)
+            .and_then(Object::as_dict)
+            .expect("watermark graphics state should be readable");
+        assert_eq!(
+            watermark_graphics_state
+                .get(b"ca")
+                .ok()
+                .and_then(object_as_f32),
+            Some(WatermarkConfig::default().opacity)
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn add_watermark_requires_input_when_template_has_placeholder() {
+        let dir = unique_test_dir();
+        fs::create_dir_all(&dir).expect("test dir should be created");
+        let input_path = dir.join("input.pdf");
+        write_minimal_pdf(&input_path);
+
+        let result = add_watermark(
+            input_path.to_string_lossy().to_string(),
+            "   ".to_string(),
+            WatermarkConfig::default(),
+        );
+
+        assert!(result
+            .expect_err("placeholder should require user input")
+            .contains("please enter text"));
 
         let _ = fs::remove_dir_all(dir);
     }
